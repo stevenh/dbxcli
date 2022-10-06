@@ -55,7 +55,7 @@ var (
 // TokenMap maps domains to a map of commands to tokens.
 // For each domain, we want to save different tokens depending on the
 // command type: personal, team access and team manage
-type TokenMap map[string]map[string]string
+type TokenMap map[string]map[string]oauth2.Token
 
 var config dropbox.Config
 
@@ -150,12 +150,13 @@ func initDbx(cmd *cobra.Command, args []string) error {
 	}
 
 	if tokenMap[domain] == nil {
-		tokenMap[domain] = make(map[string]string)
+		tokenMap[domain] = make(map[string]oauth2.Token)
 	}
 
 	tokens := tokenMap[domain]
-	if tokens[tokType] == "" {
-		fmt.Printf("1. Go to %v\n", conf.AuthCodeURL("state"))
+
+	if tokens[tokType].AccessToken == "" {
+		fmt.Printf("1. Go to %v\n", conf.AuthCodeURL("state", oauth2.SetAuthURLParam("token_access_type", "offline")))
 		fmt.Printf("2. Click \"Allow\" (you might have to log in first).\n")
 		fmt.Printf("3. Copy the authorization code.\n")
 		fmt.Printf("Enter the authorization code here: ")
@@ -171,10 +172,25 @@ func initDbx(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("token exchange: %w", err)
 		}
-
-		tokens[tokType] = token.AccessToken
+		tokens[tokType] = *token
 		if err := writeTokens(filePath, tokenMap); err != nil {
 			return err
+		}
+	}
+	ctx := context.Background()
+
+	tmpToken := tokens[tokType]
+	refreshedToken, err := conf.TokenSource(ctx, &tmpToken).Token()
+	if err != nil {
+		return fmt.Errorf("source token: %w", err)
+	}
+
+	if refreshedToken.AccessToken != tmpToken.AccessToken || refreshedToken.Expiry != tmpToken.Expiry {
+		tokens[tokType] = *refreshedToken
+		if os.Getenv(tokensEnv) == "" {
+			if err := writeTokens(filePath, tokenMap); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -183,7 +199,7 @@ func initDbx(cmd *cobra.Command, args []string) error {
 		logLevel = dropbox.LogInfo
 	}
 	config = dropbox.Config{
-		Token:           tokens[tokType],
+		Token:           tokens[tokType].AccessToken,
 		LogLevel:        logLevel,
 		Logger:          nil,
 		AsMemberID:      asMember,
